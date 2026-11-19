@@ -17,7 +17,7 @@ header .t{font-weight:700;font-size:18px}
 header .s{font-size:13px;opacity:.85;display:flex;justify-content:space-between;align-items:center;margin-top:2px}
 header button{background:rgba(255,255,255,.18);color:#fff;border:0;border-radius:8px;padding:4px 10px;font-size:13px}
 nav{display:flex;gap:6px;padding:10px 12px;background:var(--bg);position:sticky;top:58px;z-index:4}
-nav button{flex:1;border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 4px;font-size:14px;font-weight:600;color:var(--mut)}
+nav button{flex:1;min-width:0;border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 4px;font-size:14px;font-weight:600;color:var(--mut)}
 nav button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 main{padding:4px 12px 90px;max-width:560px;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 1px 2px rgba(15,23,42,.04)}
@@ -76,8 +76,9 @@ footer{text-align:center;font-size:12px;color:var(--mut);padding:18px 0 30px}
   <div class="s"><span id="tiendaTxt">Sin tienda</span><button onclick="cambiarTienda()">Cambiar tienda</button></div>
 </header>
 <nav>
-  <button id="t-contar" class="on" onclick="tab('contar')">Contar / recibir</button>
-  <button id="t-nuevo" onclick="tab('nuevo')">Producto nuevo</button>
+  <button id="t-contar" class="on" onclick="tab('contar')">Contar</button>
+  <button id="t-nuevo" onclick="tab('nuevo')">Nuevo</button>
+  <button id="t-inv" onclick="tab('inv')">Inventario</button>
   <button id="t-etiq" onclick="tab('etiq')">Etiquetas</button>
 </nav>
 <main>
@@ -171,6 +172,32 @@ footer{text-align:center;font-size:12px;color:var(--mut);padding:18px 0 30px}
   </div>
 </section>
 
+<!-- MI INVENTARIO -->
+<section id="v-inv" class="hidden">
+  <div class="card">
+    <h2 id="invTit">Mi inventario</h2>
+    <div class="kv" id="invKpis"></div>
+    <div class="row" style="margin-top:10px">
+      <input id="invQ" placeholder="Buscar por código, nombre o proveedor" oninput="pintarInv()">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <select id="invOrden" onchange="pintarInv()">
+        <option value="prov">Agrupar por proveedor</option>
+        <option value="pocas">Menos piezas primero</option>
+        <option value="valor">Mayor valor primero</option>
+      </select>
+      <select id="invTipo" onchange="pintarInv()">
+        <option value="">Propio y consignación</option>
+        <option value="Propio">Solo propio</option>
+        <option value="Consignación">Solo consignación</option>
+      </select>
+    </div>
+    <button class="btn ghost" onclick="cargarInv(true)">↻ Actualizar</button>
+    <p class="hint">El reporte completo de las tiendas, ventas y lo que hay que pedir estará en tu tablero.</p>
+  </div>
+  <div class="card list" id="invList"></div>
+</section>
+
 <!-- ETIQUETAS -->
 <section id="v-etiq" class="hidden">
   <div class="card">
@@ -214,16 +241,17 @@ function limpio(s){return String(s||"").replace(/["\\]/g,"").replace(/\s+/g," ")
 function pintarTienda(){$("tiendaTxt").textContent=tienda?("Tienda: "+tienda):"Elige tu tienda"}
 function cambiarTienda(){
   $("tiendasBtns").innerHTML=TIENDAS.map(t=>`<button class="btn ${t===tienda?'':'ghost'}" onclick="setTienda('${t}')">${t}</button>`).join("");
-  ["v-contar","v-nuevo","v-etiq"].forEach(v=>$(v).classList.add("hidden"));$("v-tienda").classList.remove("hidden");
+  ["v-contar","v-nuevo","v-inv","v-etiq"].forEach(v=>$(v).classList.add("hidden"));$("v-tienda").classList.remove("hidden");
 }
-function setTienda(t){tienda=t;localStorage.setItem("tienda",t);pintarTienda();$("v-tienda").classList.add("hidden");tab("contar")}
+function setTienda(t){inv=null;tienda=t;localStorage.setItem("tienda",t);pintarTienda();$("v-tienda").classList.add("hidden");tab("contar")}
 
 /* ---- tabs ---- */
 function tab(t){
   if(!tienda){cambiarTienda();return}
-  ["contar","nuevo","etiq"].forEach(x=>{$("v-"+x).classList.toggle("hidden",x!==t);$("t-"+x).classList.toggle("on",x===t)});
+  ["contar","nuevo","inv","etiq"].forEach(x=>{$("v-"+x).classList.toggle("hidden",x!==t);$("t-"+x).classList.toggle("on",x===t)});
   $("v-tienda").classList.add("hidden");
   if(t==="etiq")pintarEtiquetas();
+  if(t==="inv")cargarInv(false);
   if(t==="nuevo"){const c=$("codigo").value.trim().toUpperCase();if(c&&!IDX[c]&&!$("nCod").value)$("nCod").value=c;}
   window.scrollTo(0,0);
 }
@@ -369,6 +397,33 @@ function imprimir(){
   if(!etiquetas.length)return;let h="";
   etiquetas.forEach(e=>{const src=qrUrl(e.c);for(let i=0;i<e.q;i++)h+=`<div class="lbl"><img src="${src}"><div class="c">${e.c}</div><div class="n">${e.n||""}</div><div class="p">${e.p?money(e.p):""}</div></div>`});
   $("printArea").innerHTML=h;setTimeout(()=>window.print(),300);
+}
+
+/* ---- mi inventario ---- */
+let inv=null,invTienda="";
+async function cargarInv(forzar){
+  if(inv&&!forzar&&invTienda===tienda){pintarInv();return}
+  load(true,"Cargando inventario…");
+  try{let regs=[],off="",vueltas=0;
+    do{const d=await api({accion:"inventario",tienda,offset:off});regs=regs.concat(d.registros||[]);off=d.offset||"";vueltas++}while(off&&vueltas<30);
+    inv=regs.map(r=>({c:r["P Codigo"]||"",n:r["P Nombre"]||"",p:r["P Proveedor"]||"Sin proveedor",t:r["P Tipo"]||"",cat:r["P Categoria"]||"",co:+r["P Costo"]||0,pr:+r["P Precio"]||0,q:+r["Cantidad"]||0}));
+    invTienda=tienda;load(false);pintarInv();
+  }catch(e){load(false);$("invList").innerHTML=`<div class="msg err">No se pudo cargar: ${e.message}</div>`}
+}
+function pintarInv(){
+  if(!inv)return;$("invTit").textContent="Mi inventario · "+tienda;
+  const q=$("invQ").value.trim().toUpperCase(),tf=$("invTipo").value,ord=$("invOrden").value;
+  let l=inv.filter(x=>(!tf||(x.t||"")[0]===tf[0])&&(!q||(x.c+" "+x.n+" "+x.p).toUpperCase().includes(q)));
+  const pz=l.reduce((a,x)=>a+x.q,0),vc=l.reduce((a,x)=>a+x.q*x.co,0),vp=l.reduce((a,x)=>a+x.q*x.pr,0),cons=l.filter(x=>(x.t||"")[0]==="C").reduce((a,x)=>a+x.q*x.co,0);
+  const m=v=>"$"+Math.round(v).toLocaleString("es-MX");
+  $("invKpis").innerHTML=`<div><b>Productos</b><span>${l.length}</span></div><div><b>Piezas</b><span>${pz}</span></div><div><b>Valor a costo</b><span>${m(vc)}</span></div><div><b>Valor a precio</b><span>${m(vp)}</span></div><div style="grid-column:span 2"><b>De eso, en consignación (a costo)</b><span>${m(cons)}</span></div>`;
+  if(!l.length){$("invList").innerHTML='<p class="hint">Todavía no hay productos registrados en esta tienda. Empieza en la pestaña Contar.</p>';return}
+  const fila=x=>`<div class="it" onclick="$('codigo').value='${x.c}';tab('contar');buscar()"><span><b>${x.c}</b> · ${x.n}<br><small style="color:var(--mut)">${(x.t||"")[0]==="C"?"Consig. · ":""}${m(x.pr)} c/u</small></span><span style="font-weight:800;${x.q<=1?'color:var(--bad)':''}">${x.q}</span></div>`;
+  let h="";
+  if(ord==="prov"){const g={};l.forEach(x=>(g[x.p]=g[x.p]||[]).push(x));
+    Object.keys(g).sort().forEach(p=>{const s=g[p];h+=`<div style="margin:12px 0 2px;font-weight:800;color:var(--acc)">${p} <small style="color:var(--mut);font-weight:600">· ${s.reduce((a,x)=>a+x.q,0)} pzas · ${m(s.reduce((a,x)=>a+x.q*x.pr,0))}</small></div>`+s.sort((a,b)=>a.c.localeCompare(b.c)).map(fila).join("")})}
+  else{l=l.slice().sort(ord==="pocas"?(a,b)=>a.q-b.q:(a,b)=>b.q*b.pr-a.q*a.pr);h=l.map(fila).join("")}
+  $("invList").innerHTML=h;
 }
 
 /* ---- inicio ---- */
